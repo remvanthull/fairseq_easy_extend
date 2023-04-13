@@ -9,8 +9,8 @@ task:
 #   _name: nat_loss
 criterion:
   _name: rl_loss
-  sentece_level_metric: bleu
-  # sentece_level_metric: chrf
+  sentecne_level_metric: bleu
+  # sentence_level_metric: chrf
 model:
   _name: cmlm_transformer_base
   share_decoder_input_output_embed: true

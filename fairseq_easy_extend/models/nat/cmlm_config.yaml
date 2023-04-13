@@ -5,8 +5,12 @@ task:
   source_lang: de
   target_lang: en
   noise: random_mask
+# criterion:
+#   _name: nat_loss
 criterion:
-  _name: nat_loss
+  _name: rl_loss
+  sentece_level_metric: bleu
+  # sentece_level_metric: chrf
 model:
   _name: cmlm_transformer_base
   share_decoder_input_output_embed: true

@@ -2,12 +2,21 @@
 from fairseq.criterions import FairseqCriterion, register_criterion
 from fairseq.dataclass import FairseqDataclass
 
+import torch
+
+
 from dataclasses import dataclass, field
+
+import sacrebleu
+from nltk.translate.bleu_score import sentence_bleu
+from sacrebleu.metrics import CHRF
 
 @dataclass
 class RLCriterionConfig(FairseqDataclass):
     sentence_level_metric: str = field(default="bleu",
                                        metadata={"help": "sentence level metric"})
+
+
 
 
 @register_criterion("rl_loss", dataclass=RLCriterionConfig)
@@ -28,6 +37,7 @@ class RLCriterion(FairseqCriterion):
         #padding mask, do not remove
         if masks is not None:
             outputs, targets = outputs[masks], targets[masks]
+        
 
         #we take a softmax over outputs
         #argmax over the softmax \ sampling (e.g. multinomial)
@@ -41,5 +51,19 @@ class RLCriterion(FairseqCriterion):
 
         #loss = -log_prob(outputs)*R()
         #loss = loss.mean()
+
+        with torch.no_grad():
+            log_probs = torch.nn.functional.log_softmax(outputs, dim=-1)
+            # Sample from the multinomial distribution
+            dists = torch.distributions.Categorical(logits=log_probs)
+            predicted = dists.sample()
+            predicted_str = self.target_dictionary.string(predicted)
+            if self.metric == "bleu":
+                score = sacrebleu.corpus_bleu(predicted_str, targets).score
+            elif self.metric == "chrf":
+                score = sacrebleu.sentence_chrf(predicted_str, targets).score
+        
+        loss = -log_probs * score
+        loss = loss.mean() * factor
 
         return loss

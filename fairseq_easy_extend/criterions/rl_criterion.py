@@ -1,15 +1,18 @@
 
-from fairseq.criterions import FairseqCriterion, register_criterion
-from fairseq.dataclass import FairseqDataclass
+
+import math
 
 import torch
-
+import torch.nn.functional as F
+from fairseq import utils
+from fairseq.logging import metrics
+from fairseq.criterions import FairseqCriterion, register_criterion
+from fairseq.dataclass import FairseqDataclass
+from torch import Tensor
 
 from dataclasses import dataclass, field
-
 import sacrebleu
-from nltk.translate.bleu_score import sentence_bleu
-from sacrebleu.metrics import CHRF
+
 
 @dataclass
 class RLCriterionConfig(FairseqDataclass):
@@ -53,21 +56,25 @@ class RLCriterion(FairseqCriterion):
         #loss = -log_prob(outputs)*R()
         #loss = loss.mean()
 
-        with torch.no_grad():
-            log_probs = torch.nn.functional.log_softmax(outputs, dim=-1)
-            # Sample from the multinomial distribution
-            dists = torch.distributions.Categorical(logits=log_probs)
-            predicted = dists.sample()
-            predicted_str = self.tgt_dict.string(predicted)
-            if self.metric == "bleu":
-                score = sacrebleu.corpus_bleu(predicted_str, targets).score
-            elif self.metric == "chrf":
-                score = sacrebleu.sentence_chrf(predicted_str, targets).score
-        
+        # with torch.no_grad():
+        log_probs = torch.nn.functional.log_softmax(outputs, dim=-1)
+        # Sample from the multinomial distribution
+        dists = torch.distributions.Categorical(logits=log_probs)
+        predicted = dists.sample()
+        predicted_str = self.tgt_dict.string(predicted)
+        target_str = self.tgt_dict.string(targets)
+        if self.metric == "bleu":
+            score = sacrebleu.corpus_bleu(predicted_str, target_str).score
+        elif self.metric == "chrf":
+            score = sacrebleu.sentence_chrf(predicted_str, [target_str]).score
+    
         loss = -log_probs * score
+
+        rl_loss = loss
+
         loss = loss.mean() * factor
 
-        return loss
+        return {"name": name, "loss": loss, "rl_loss": rl_loss, "factor": factor}
     
     def forward(self, model, sample, reduce=True):
         """Compute the loss for the given sample.
@@ -86,7 +93,7 @@ class RLCriterion(FairseqCriterion):
         tgt_tokens, prev_output_tokens = sample["target"], sample["prev_target"]
 
         outputs = model(src_tokens, src_lengths, prev_output_tokens, tgt_tokens)
-        losses, nll_loss = [], []
+        losses, rl_loss = [], []
 
         for obj in outputs:
             if outputs[obj].get("loss", None) is None:
@@ -106,11 +113,11 @@ class RLCriterion(FairseqCriterion):
                 )
 
             losses += [_losses]
-            if outputs[obj].get("nll_loss", False):
-                nll_loss += [_losses.get("nll_loss", 0.0)]
+            if outputs[obj].get("rl_loss", False):
+                rl_loss += [_losses.get("rl_loss", 0.0)]
 
         loss = sum(l["loss"] for l in losses)
-        nll_loss = sum(l for l in nll_loss) if len(nll_loss) > 0 else loss.new_tensor(0)
+        rl_loss = sum(l for l in rl_loss) if len(rl_loss) > 0 else loss.new_tensor(0)
 
         # NOTE:
         # we don't need to use sample_size as denominator for the gradient
@@ -118,7 +125,7 @@ class RLCriterion(FairseqCriterion):
         sample_size = 1
         logging_output = {
             "loss": loss.data,
-            "nll_loss": nll_loss.data,
+            "rl_loss": rl_loss.data,
             "ntokens": ntokens,
             "nsentences": nsentences,
             "sample_size": sample_size,
@@ -140,13 +147,13 @@ class RLCriterion(FairseqCriterion):
             sum(log.get("sample_size", 0) for log in logging_outputs)
         )
         loss = utils.item(sum(log.get("loss", 0) for log in logging_outputs))
-        nll_loss = utils.item(sum(log.get("nll_loss", 0) for log in logging_outputs))
+        rl_loss = utils.item(sum(log.get("rl_loss", 0) for log in logging_outputs))
 
         metrics.log_scalar(
             "loss", loss / sample_size / math.log(2), sample_size, round=3
         )
         metrics.log_scalar(
-            "nll_loss", nll_loss / sample_size / math.log(2), sample_size, round=3
+            "rl_loss", rl_loss / sample_size / math.log(2), sample_size, round=3
         )
         metrics.log_derived(
             "ppl", lambda meters: utils.get_perplexity(meters["loss"].avg)

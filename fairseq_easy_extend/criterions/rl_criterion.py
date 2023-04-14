@@ -1,7 +1,4 @@
-
-
 import math
-
 import torch
 import torch.nn.functional as F
 from fairseq import utils
@@ -56,6 +53,7 @@ class RLCriterion(FairseqCriterion):
         #loss = -log_prob(outputs)*R()
         #loss = loss.mean()
 
+
         # with torch.no_grad():
         log_probs = torch.nn.functional.log_softmax(outputs, dim=-1)
         # Sample from the multinomial distribution
@@ -64,17 +62,22 @@ class RLCriterion(FairseqCriterion):
         predicted_str = self.tgt_dict.string(predicted)
         target_str = self.tgt_dict.string(targets)
         if self.metric == "bleu":
-            score = sacrebleu.corpus_bleu(predicted_str, target_str).score
+            score = sacrebleu.corpus_bleu(predicted_str, target_str, smooth_method="exp", smooth_value=label_smoothing).score
         elif self.metric == "chrf":
             score = sacrebleu.sentence_chrf(predicted_str, [target_str]).score
     
-        loss = -log_probs * score
+        # Negative Log Likelihood (nll) loss
+        nll_loss = F.nll_loss(log_probs.view(-1, log_probs.size(-1)), targets.view(-1), ignore_index=self.padding_idx, reduction='mean')
+        loss = -nll_loss * score
+        
+        loss = loss * factor
 
-        rl_loss = loss
+        return {"name": name, "loss": loss, "nll_loss": nll_loss, "factor": factor}
 
-        loss = loss.mean() * factor
 
-        return {"name": name, "loss": loss, "rl_loss": rl_loss, "factor": factor}
+
+    def _custom_loss(self, loss, name="loss", factor=1.0):
+        return {"name": name, "loss": loss, "factor": factor}
     
     def forward(self, model, sample, reduce=True):
         """Compute the loss for the given sample.
@@ -93,7 +96,7 @@ class RLCriterion(FairseqCriterion):
         tgt_tokens, prev_output_tokens = sample["target"], sample["prev_target"]
 
         outputs = model(src_tokens, src_lengths, prev_output_tokens, tgt_tokens)
-        losses, rl_loss = [], []
+        losses, nll_loss = [], []
 
         for obj in outputs:
             if outputs[obj].get("loss", None) is None:
@@ -113,11 +116,11 @@ class RLCriterion(FairseqCriterion):
                 )
 
             losses += [_losses]
-            if outputs[obj].get("rl_loss", False):
-                rl_loss += [_losses.get("rl_loss", 0.0)]
+            if outputs[obj].get("nll_loss", False):
+                nll_loss += [_losses.get("nll_loss", 0.0)]
 
         loss = sum(l["loss"] for l in losses)
-        rl_loss = sum(l for l in rl_loss) if len(rl_loss) > 0 else loss.new_tensor(0)
+        nll_loss = sum(l for l in nll_loss) if len(nll_loss) > 0 else loss.new_tensor(0)
 
         # NOTE:
         # we don't need to use sample_size as denominator for the gradient
@@ -125,7 +128,7 @@ class RLCriterion(FairseqCriterion):
         sample_size = 1
         logging_output = {
             "loss": loss.data,
-            "rl_loss": rl_loss.data,
+            "nll_loss": nll_loss.data,
             "ntokens": ntokens,
             "nsentences": nsentences,
             "sample_size": sample_size,
@@ -147,13 +150,13 @@ class RLCriterion(FairseqCriterion):
             sum(log.get("sample_size", 0) for log in logging_outputs)
         )
         loss = utils.item(sum(log.get("loss", 0) for log in logging_outputs))
-        rl_loss = utils.item(sum(log.get("rl_loss", 0) for log in logging_outputs))
+        nll_loss = utils.item(sum(log.get("nll_loss", 0) for log in logging_outputs))
 
         metrics.log_scalar(
             "loss", loss / sample_size / math.log(2), sample_size, round=3
         )
         metrics.log_scalar(
-            "rl_loss", rl_loss / sample_size / math.log(2), sample_size, round=3
+            "nll_loss", nll_loss / sample_size / math.log(2), sample_size, round=3
         )
         metrics.log_derived(
             "ppl", lambda meters: utils.get_perplexity(meters["loss"].avg)

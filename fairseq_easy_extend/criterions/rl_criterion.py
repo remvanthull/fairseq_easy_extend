@@ -53,24 +53,24 @@ class RLCriterion(FairseqCriterion):
         #loss = -log_prob(outputs)*R()
         #loss = loss.mean()
 
-
-        # with torch.no_grad():
         log_probs = torch.nn.functional.log_softmax(outputs, dim=-1)
         # Sample from the multinomial distribution
         dists = torch.distributions.Categorical(logits=log_probs)
         predicted = dists.sample()
         predicted_str = self.tgt_dict.string(predicted)
         target_str = self.tgt_dict.string(targets)
-        if self.metric == "bleu":
-            score = sacrebleu.corpus_bleu(predicted_str, target_str, smooth_method="exp", smooth_value=label_smoothing).score
-        elif self.metric == "chrf":
-            score = sacrebleu.sentence_chrf(predicted_str, [target_str]).score
-    
-        # Negative Log Likelihood (nll) loss
-        nll_loss = F.nll_loss(log_probs.view(-1, log_probs.size(-1)), targets.view(-1), ignore_index=self.padding_idx, reduction='mean')
-        loss = -nll_loss * score
+        with torch.no_grad():
+            if self.metric == "bleu":
+                score = sacrebleu.corpus_bleu(predicted_str, target_str, smooth_method="exp", smooth_value=label_smoothing).score
+            elif self.metric == "chrf":
+                score = sacrebleu.sentence_chrf(predicted_str, [target_str]).score
+        
+        loss = -log_probs * score
+
+        nll_loss = loss
         
         loss = loss * factor
+
 
         return {"name": name, "loss": loss, "nll_loss": nll_loss, "factor": factor}
 

@@ -66,9 +66,10 @@ class RLCriterion(FairseqCriterion):
                 score = sacrebleu.sentence_chrf(predicted_str, [target_str]).score
         
         loss = -log_probs * score
+        loss = loss.mean()
 
         nll_loss = loss
-        
+
         loss = loss * factor
 
 

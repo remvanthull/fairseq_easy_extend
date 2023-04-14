@@ -9,7 +9,7 @@ task:
 #   _name: nat_loss
 criterion:
   _name: rl_loss
-  sentecne_level_metric: bleu
+  sentence_level_metric: bleu
   # sentence_level_metric: chrf
 model:
   _name: cmlm_transformer_base

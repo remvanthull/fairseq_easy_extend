@@ -54,31 +54,21 @@ class RLCriterion(FairseqCriterion):
         #loss = loss.mean()
 
         log_probs = torch.nn.functional.log_softmax(outputs, dim=-1)
-        # Sample from the multinomial distribution
         dists = torch.distributions.Categorical(logits=log_probs)
         predicted = dists.sample()
         predicted_str = self.tgt_dict.string(predicted)
         target_str = self.tgt_dict.string(targets)
         with torch.no_grad():
             if self.metric == "bleu":
-                score = sacrebleu.corpus_bleu(predicted_str, target_str, smooth_method="exp", smooth_value=label_smoothing).score
+                score = sacrebleu.sentence_bleu(predicted_str, [target_str], smooth_method="exp", smooth_value=label_smoothing).score
             elif self.metric == "chrf":
                 score = sacrebleu.sentence_chrf(predicted_str, [target_str]).score
-        
-        loss = -log_probs * score
+      
+        sample_log_probs = torch.gather(log_probs, 1, predicted.unsqueeze(1)).squeeze()
+        loss = -sample_log_probs * score
         loss = loss.mean()
 
-        nll_loss = loss
-
-        loss = loss * factor
-
-
-        return {"name": name, "loss": loss, "nll_loss": nll_loss, "factor": factor}
-
-
-
-    def _custom_loss(self, loss, name="loss", factor=1.0):
-        return {"name": name, "loss": loss, "factor": factor}
+        return loss
     
     def forward(self, model, sample, reduce=True):
         """Compute the loss for the given sample.
@@ -97,87 +87,21 @@ class RLCriterion(FairseqCriterion):
         tgt_tokens, prev_output_tokens = sample["target"], sample["prev_target"]
 
         outputs = model(src_tokens, src_lengths, prev_output_tokens, tgt_tokens)
-        losses, nll_loss = [], []
-
-        for obj in outputs:
-            if outputs[obj].get("loss", None) is None:
-                _losses = self._compute_loss(
-                    outputs[obj].get("out"),
-                    outputs[obj].get("tgt"),
-                    outputs[obj].get("mask", None),
-                    outputs[obj].get("ls", 0.0),
-                    name=obj + "-loss",
-                    factor=outputs[obj].get("factor", 1.0),
-                )
-            else:
-                _losses = self._custom_loss(
-                    outputs[obj].get("loss"),
-                    name=obj + "-loss",
-                    factor=outputs[obj].get("factor", 1.0),
-                )
-
-            losses += [_losses]
-            if outputs[obj].get("nll_loss", False):
-                nll_loss += [_losses.get("nll_loss", 0.0)]
-
-        loss = sum(l["loss"] for l in losses)
-        nll_loss = sum(l for l in nll_loss) if len(nll_loss) > 0 else loss.new_tensor(0)
+        #get loss only on tokens, not on lengths
+        outputs = outputs["word_ins"]
+        masks = outputs.get("mask", None),
+        loss = self._compute_loss(outputs, tgt_tokens, masks)
 
         # NOTE:
         # we don't need to use sample_size as denominator for the gradient
         # here sample_size is just used for logging
         sample_size = 1
         logging_output = {
-            "loss": loss.data,
-            "nll_loss": nll_loss.data,
+            "loss": loss.detach(),
+            "nll_loss": loss.detach(),
             "ntokens": ntokens,
             "nsentences": nsentences,
             "sample_size": sample_size,
         }
 
-        for l in losses:
-            logging_output[l["name"]] = (
-                utils.item(l["loss"].data / l["factor"])
-                if reduce
-                else l[["loss"]].data / l["factor"]
-            )
-
         return loss, sample_size, logging_output
-
-    @staticmethod
-    def reduce_metrics(logging_outputs) -> None:
-        """Aggregate logging outputs from data parallel training."""
-        sample_size = utils.item(
-            sum(log.get("sample_size", 0) for log in logging_outputs)
-        )
-        loss = utils.item(sum(log.get("loss", 0) for log in logging_outputs))
-        nll_loss = utils.item(sum(log.get("nll_loss", 0) for log in logging_outputs))
-
-        metrics.log_scalar(
-            "loss", loss / sample_size / math.log(2), sample_size, round=3
-        )
-        metrics.log_scalar(
-            "nll_loss", nll_loss / sample_size / math.log(2), sample_size, round=3
-        )
-        metrics.log_derived(
-            "ppl", lambda meters: utils.get_perplexity(meters["loss"].avg)
-        )
-
-        for key in logging_outputs[0]:
-            if key[-5:] == "-loss":
-                val = sum(log.get(key, 0) for log in logging_outputs)
-                metrics.log_scalar(
-                    key[:-5],
-                    val / sample_size / math.log(2) if sample_size > 0 else 0.0,
-                    sample_size,
-                    round=3,
-                )
-
-    @staticmethod
-    def logging_outputs_can_be_summed() -> bool:
-        """
-        Whether the logging outputs returned by `forward` can be summed
-        across workers prior to calling `reduce_metrics`. Setting this
-        to True will improves distributed training speed.
-        """
-        return True

@@ -103,6 +103,7 @@ class RLCriterion(FairseqCriterion):
             "nsentences": nsentences,
             "sample_size": sample_size,
         }
+        return loss, sample_size, logging_output
 
     @staticmethod
     def reduce_metrics(logging_outputs) -> None:

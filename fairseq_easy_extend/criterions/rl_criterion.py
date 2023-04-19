@@ -54,11 +54,14 @@ class RLCriterion(FairseqCriterion):
         predicted = dists.sample()
         predicted_str = self.tgt_dict.string(predicted)
         target_str = self.tgt_dict.string(targets)
+       
         with torch.no_grad():
             if self.metric == "bleu":
                 score = sacrebleu.sentence_bleu(predicted_str, [target_str]).score
+                score = score/100
             elif self.metric == "chrf":
                 score = sacrebleu.sentence_chrf(predicted_str, [target_str]).score
+                score = score/100
             elif self.metric == "bert":
                 _, _, score = bert_score([predicted_str], [target_str], lang=self.tgt_lang)
                 score = score.mean()

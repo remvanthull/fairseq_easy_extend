@@ -24,6 +24,7 @@ class RLCriterion(FairseqCriterion):
         self.metric = sentence_level_metric
         self.tgt_dict = task.target_dictionary
         self.tgt_lang = "en"
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     def _compute_loss(self, outputs, targets, masks=None):
         """
@@ -32,44 +33,48 @@ class RLCriterion(FairseqCriterion):
         masks:   batch x len
         """
 
-        #padding mask, do not remove
-        if masks is not None:
-            outputs, targets = outputs[masks], targets[masks]
+        # input to device
+        outputs = outputs.to(self.device)
+        targets = targets.to(self.device)
+        
+        # B x T x V
+        bsz = outputs.size(0)
+        seq_len = outputs.size(1)
+        vocab_size = outputs.size(2)
 
-        #we take a softmax over outputs
-        #argmax over the softmax \ sampling (e.g. multinomial)
-        #sampled_sentence = [4, 17, 18, 19, 20]
-        #sampled_sentence_string = tgt_dict.string([4, 17, 18, 19, 20])
-        #see dictionary class of fairseq
-        #target_sentence = "I am a sentence"
-        #with torch.no_grad()
-            #R(*) = eval_metric(sampled_sentence_string, target_sentence)
-            #R(*) is a number, BLEU, сhrf, etc.
-
-        #loss = -log_prob(sample_outputs)*R()
-        #loss = loss.mean()
-
-        log_probs = torch.nn.functional.log_softmax(outputs, dim=-1)
-        dists = torch.distributions.Categorical(logits=log_probs)
-        predicted = dists.sample()
-        predicted_str = self.tgt_dict.string(predicted)
-        target_str = self.tgt_dict.string(targets)
-       
+        # sample predictions and convert predictions and targets to strings
+        with torch.no_grad():
+            probs = F.softmax(outputs, dim=-1).view(-1, vocab_size)
+            predicted  = torch.multinomial(probs, 1,replacement=True).view(bsz, seq_len)
+            predicted_str = [self.tgt_dict.string(pred) for pred in predicted]
+            target_str = [self.tgt_dict.string(target) for target in targets]
+        
+        # calculate metric score
         with torch.no_grad():
             if self.metric == "bleu":
-                score = sacrebleu.sentence_bleu(predicted_str, [target_str]).score
-                score = score/100
+                score = torch.tensor([[sacrebleu.sentence_bleu(pred, [targ]).score] * seq_len for pred, targ in zip(predicted_str, target_str)])
+                # score = sacrebleu.sentence_bleu(predicted_str, [target_str]).score
             elif self.metric == "chrf":
-                score = sacrebleu.sentence_chrf(predicted_str, [target_str]).score
-                score = score/100
+                score = torch.tensor([[sacrebleu.sentence_chrf(pred, [targ]).score] * seq_len for pred, targ in zip(predicted_str, target_str)])
             elif self.metric == "bert":
                 _, _, score = bert_score([predicted_str], [target_str], lang=self.tgt_lang)
-                score = score.mean()
-      
+                score = torch.tensor([[bert_score([pred], [targ], lang=self.tgt_lang).score[2].mean()] * seq_len for pred, targ in zip(predicted_str, target_str)])
+        
+        # take masks
+        if masks is not None:
+            masks = masks.to_device(self.device)
+            outputs, targets = outputs[masks], targets[masks]
+            score, predicted = score[masks], predicted[masks]
+
+        # get the log probs of the samples
+        log_probs = F.log_softmax(outputs, dim=-1)
+        score = score.to(self.device)
         sample_log_probs = torch.gather(log_probs, 1, predicted.unsqueeze(1)).squeeze()
+        
+        # calculate loss of all samples and average for batch loss
         loss = -sample_log_probs * score
         loss = loss.mean()
-
+        print(loss)
         return loss
     
     def forward(self, model, sample, reduce=True):

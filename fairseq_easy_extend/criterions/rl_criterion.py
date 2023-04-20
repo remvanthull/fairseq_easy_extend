@@ -62,7 +62,7 @@ class RLCriterion(FairseqCriterion):
         
         # take masks
         if masks is not None:
-            masks = masks.to_device(self.device)
+            masks = masks.to(self.device)
             outputs, targets = outputs[masks], targets[masks]
             score, predicted = score[masks], predicted[masks]
 

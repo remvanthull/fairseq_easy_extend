@@ -46,8 +46,8 @@ class RLCriterion(FairseqCriterion):
         with torch.no_grad():
             probs = F.softmax(outputs, dim=-1).view(-1, vocab_size)
             predicted  = torch.multinomial(probs, 1,replacement=True).view(bsz, seq_len)
-            predicted_str = [self.tgt_dict.string(pred) for pred in predicted]
-            target_str = [self.tgt_dict.string(target) for target in targets]
+            predicted_str = [self.tgt_dict.string(pred).replace('@@ ', '') for pred in predicted]
+            target_str = [self.tgt_dict.string(target).replace('@@ ', '') for target in targets]
         
         # calculate metric score
         with torch.no_grad():

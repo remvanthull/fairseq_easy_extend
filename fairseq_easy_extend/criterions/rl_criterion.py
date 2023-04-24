@@ -6,6 +6,7 @@ from fairseq.logging import metrics
 from fairseq.criterions import FairseqCriterion, register_criterion
 from fairseq.dataclass import FairseqDataclass
 from torch import Tensor
+import re
 
 from dataclasses import dataclass, field
 import sacrebleu
@@ -45,14 +46,19 @@ class RLCriterion(FairseqCriterion):
         # sample predictions and convert predictions and targets to strings
         with torch.no_grad():
             probs = F.softmax(outputs, dim=-1).view(-1, vocab_size)
-            predicted  = torch.multinomial(probs, 1,replacement=True).view(bsz, seq_len)
-            predicted_str = [self.tgt_dict.string(pred).replace('@@ ', '') for pred in predicted]
-            target_str = [self.tgt_dict.string(target).replace('@@ ', '') for target in targets]
-        
+            # predicted  = torch.multinomial(probs, 1,replacement=True).view(bsz, seq_len)
+            predicted = torch.argmax(probs, dim=-1).view(bsz, seq_len)
+            predicted_str = [re.sub(r'\s+([.,?!;:\-\(\)\[\]\{\}"\'\/\\\&\*\$%\+=><])', r'\1', self.tgt_dict.string(pred, bpe_symbol="@@ ").replace('<pad>', '')) for pred in predicted]
+            target_str = [re.sub(r'\s+([.,?!;:\-\(\)\[\]\{\}"\'\/\\\&\*\$%\+=><])', r'\1', self.tgt_dict.string(target, bpe_symbol="@@ ").replace('<pad>', '')) for target in targets]
+            # predicted_str = [self.tgt_dict.string(pred, bpe_symbol="@@ ") for pred in predicted]
+            # target_str = [self.tgt_dict.string(target, bpe_symbol="@@ ") for target in targets]
+  
+
         # calculate metric score
         with torch.no_grad():
             if self.metric == "bleu":
                 score = torch.tensor([[sacrebleu.sentence_bleu(pred, [targ]).score] * seq_len for pred, targ in zip(predicted_str, target_str)])
+                print("Score", score.mean())
                 # score = sacrebleu.sentence_bleu(predicted_str, [target_str]).score
             elif self.metric == "chrf":
                 score = torch.tensor([[sacrebleu.sentence_chrf(pred, [targ]).score] * seq_len for pred, targ in zip(predicted_str, target_str)])
@@ -74,7 +80,7 @@ class RLCriterion(FairseqCriterion):
         # calculate loss of all samples and average for batch loss
         loss = -sample_log_probs * score
         loss = loss.mean()
-        print(loss)
+        print("Loss", loss)
         return loss
     
     def forward(self, model, sample, reduce=True):

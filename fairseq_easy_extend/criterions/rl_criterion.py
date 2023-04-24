@@ -7,6 +7,7 @@ from fairseq.criterions import FairseqCriterion, register_criterion
 from fairseq.dataclass import FairseqDataclass
 from torch import Tensor
 import re
+import sacremoses
 
 from dataclasses import dataclass, field
 import sacrebleu
@@ -26,6 +27,7 @@ class RLCriterion(FairseqCriterion):
         self.tgt_dict = task.target_dictionary
         self.tgt_lang = "en"
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.detokenizer = sacremoses.MosesDetokenizer(lang='en')
 
     def _compute_loss(self, outputs, targets, masks=None):
         """
@@ -43,17 +45,13 @@ class RLCriterion(FairseqCriterion):
         seq_len = outputs.size(1)
         vocab_size = outputs.size(2)
 
-        # sample predictions and convert predictions and targets to strings
+        # sample predictions and convert predictions and targets to strings without tokenization and bpe
         with torch.no_grad():
             probs = F.softmax(outputs, dim=-1).view(-1, vocab_size)
             # predicted  = torch.multinomial(probs, 1,replacement=True).view(bsz, seq_len)
             predicted = torch.argmax(probs, dim=-1).view(bsz, seq_len)
-            predicted_str = [re.sub(r'\s+([.,?!;:\-\(\)\[\]\{\}"\'\/\\\&\*\$%\+=><])', r'\1', self.tgt_dict.string(pred, bpe_symbol="@@ ").replace('<pad>', '')) for pred in predicted]
-            target_str = [re.sub(r'\s+([.,?!;:\-\(\)\[\]\{\}"\'\/\\\&\*\$%\+=><])', r'\1', self.tgt_dict.string(target, bpe_symbol="@@ ").replace('<pad>', '')) for target in targets]
-            # predicted_str = [self.tgt_dict.string(pred, bpe_symbol="@@ ") for pred in predicted]
-            # target_str = [self.tgt_dict.string(target, bpe_symbol="@@ ") for target in targets]
-  
-
+            predicted_str = [self.detokenizer.detokenize(self.tgt_dict.string(pred, bpe_symbol="@@ ").split(), return_str=True) for pred in predicted]
+            target_str = [self.detokenizer.detokenize(self.tgt_dict.string(target, bpe_symbol="@@ ").split(), return_str=True) for target in targets]        
         # calculate metric score
         with torch.no_grad():
             if self.metric == "bleu":

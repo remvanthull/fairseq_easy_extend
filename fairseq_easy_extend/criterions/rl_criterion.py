@@ -58,7 +58,7 @@ class RLCriterion(FairseqCriterion):
                 score = torch.tensor([[sacrebleu.sentence_chrf(pred, [targ]).score] * seq_len for pred, targ in zip(predicted_str, target_str)])
             elif self.metric == "bert":
                 _, _, score = bert_score([predicted_str], [target_str], lang=self.tgt_lang)
-                score = torch.tensor([[bert_score([pred], [targ], lang=self.tgt_lang).score[2].mean()] * seq_len for pred, targ in zip(predicted_str, target_str)])
+                score = torch.tensor([[bert_score([pred], [targ], lang=self.tgt_lang)[2].mean()] * seq_len for pred, targ in zip(predicted_str, target_str)])
         
         # take masks
         if masks is not None:

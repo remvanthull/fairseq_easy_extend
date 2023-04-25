@@ -11,7 +11,6 @@ import sacremoses
 
 from dataclasses import dataclass, field
 import sacrebleu
-from bert_score import score as bert_score
 
 @dataclass
 class RLCriterionConfig(FairseqDataclass):
@@ -48,10 +47,21 @@ class RLCriterion(FairseqCriterion):
         # sample predictions and convert predictions and targets to strings without tokenization and bpe
         with torch.no_grad():
             probs = F.softmax(outputs, dim=-1).view(-1, vocab_size)
-            # predicted  = torch.multinomial(probs, 1,replacement=True).view(bsz, seq_len)
-            predicted = torch.argmax(probs, dim=-1).view(bsz, seq_len)
+            
+            # multinomial sampling
+            predicted  = torch.multinomial(probs, 1,replacement=True).view(bsz, seq_len)
+            
+            # # argmax sampling
+            # predicted = torch.argmax(probs, dim=-1).view(bsz, seq_len)
+            
+            # detokenization
             predicted_str = [self.detokenizer.detokenize(self.tgt_dict.string(pred, bpe_symbol="@@ ").split(), return_str=True) for pred in predicted]
-            target_str = [self.detokenizer.detokenize(self.tgt_dict.string(target, bpe_symbol="@@ ").split(), return_str=True) for target in targets]        
+            target_str = [self.detokenizer.detokenize(self.tgt_dict.string(target, bpe_symbol="@@ ").split(), return_str=True) for target in targets]
+
+            # # no detokenization
+            # predicted_str = [self.tgt_dict.string(pred, bpe_symbol="@@ ") for pred in predicted]
+            # target_str = [self.tgt_dict.string(target, bpe_symbol="@@ ") for target in targets]
+        
         # calculate metric score
         with torch.no_grad():
             if self.metric == "bleu":
@@ -60,10 +70,7 @@ class RLCriterion(FairseqCriterion):
                 # score = sacrebleu.sentence_bleu(predicted_str, [target_str]).score
             elif self.metric == "chrf":
                 score = torch.tensor([[sacrebleu.sentence_chrf(pred, [targ]).score] * seq_len for pred, targ in zip(predicted_str, target_str)])
-            elif self.metric == "bert":
-                _, _, score = bert_score([predicted_str], [target_str], lang=self.tgt_lang)
-                score = torch.tensor([[bert_score([pred], [targ], lang=self.tgt_lang)[2].mean()] * seq_len for pred, targ in zip(predicted_str, target_str)])
-        
+          
         # take masks
         if masks is not None:
             masks = masks.to(self.device)

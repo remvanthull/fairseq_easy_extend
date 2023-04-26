@@ -16,18 +16,22 @@ import sacrebleu
 class RLCriterionConfig(FairseqDataclass):
     sentence_level_metric: str = field(default="bleu",
                                        metadata={"help": "sentence level metric"})
+    sampling: str = field(default="multinomial",
+                                       metadata={"help": "sampling method"})
+    detokenization: bool = field(default=True,
+                                 metadata={"help": "whether to detokenize the output"})
 
 
 @register_criterion("rl_loss", dataclass=RLCriterionConfig)
 class RLCriterion(FairseqCriterion):
-    def __init__(self, task, sentence_level_metric, detokenization=True, sampling="multinomial"):
+    def __init__(self, task, sentence_level_metric, sampling="multinomial", detokenization=True):
         super().__init__(task)
         self.metric = sentence_level_metric
         self.tgt_dict = task.target_dictionary
         self.tgt_lang = "en"
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.detokenization = detokenization
         self.sampling = sampling
+        self.detokenization = detokenization
         if self.detokenization:
             self.detokenizer = sacremoses.MosesDetokenizer(lang='en')
 
@@ -87,6 +91,7 @@ class RLCriterion(FairseqCriterion):
         # calculate loss of all samples and average for batch loss
         loss = -sample_log_probs * score
         loss = loss.mean()
+        print("Loss: ", loss)
         return loss
     
     def forward(self, model, sample, reduce=True):

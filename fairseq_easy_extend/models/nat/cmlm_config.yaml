@@ -8,9 +8,10 @@ task:
 criterion:
   # _name: nat_loss
   _name: rl_loss
-  # sentence_level_metric: bert
   sentence_level_metric: bleu
   # sentence_level_metric: chrf
+  detokenize: true
+  sampling: multinomial
 model:
   _name: cmlm_transformer_base
   share_decoder_input_output_embed: true

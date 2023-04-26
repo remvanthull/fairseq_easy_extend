@@ -20,13 +20,17 @@ class RLCriterionConfig(FairseqDataclass):
 
 @register_criterion("rl_loss", dataclass=RLCriterionConfig)
 class RLCriterion(FairseqCriterion):
-    def __init__(self, task, sentence_level_metric):
+    def __init__(self, task, sentence_level_metric, detokenization=True, sampling="multinomial"):
         super().__init__(task)
         self.metric = sentence_level_metric
         self.tgt_dict = task.target_dictionary
         self.tgt_lang = "en"
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.detokenizer = sacremoses.MosesDetokenizer(lang='en')
+        self.detokenization = detokenization
+        self.sampling = sampling
+        if self.detokenization:
+            self.detokenizer = sacremoses.MosesDetokenizer(lang='en')
+
 
     def _compute_loss(self, outputs, targets, masks=None):
         """
@@ -48,26 +52,24 @@ class RLCriterion(FairseqCriterion):
         with torch.no_grad():
             probs = F.softmax(outputs, dim=-1).view(-1, vocab_size)
             
-            # multinomial sampling
-            predicted  = torch.multinomial(probs, 1,replacement=True).view(bsz, seq_len)
+            # multinomial or argmax sampling
+            if self.sampling == "multinomial":
+                predicted  = torch.multinomial(probs, 1,replacement=True).view(bsz, seq_len)
+            elif self.sampling == "argmax":
+                predicted = torch.argmax(probs, dim=-1).view(bsz, seq_len)
             
-            # # argmax sampling
-            # predicted = torch.argmax(probs, dim=-1).view(bsz, seq_len)
+            # detokenization or not
+            if self.detokenization:
+                predicted_str = [self.detokenizer.detokenize(self.tgt_dict.string(pred, bpe_symbol="@@ ").split(), return_str=True) for pred in predicted]
+                target_str = [self.detokenizer.detokenize(self.tgt_dict.string(target, bpe_symbol="@@ ").split(), return_str=True) for target in targets]
+            else:
+                predicted_str = [self.tgt_dict.string(pred, bpe_symbol="@@ ") for pred in predicted]
+                target_str = [self.tgt_dict.string(target, bpe_symbol="@@ ") for target in targets]
             
-            # detokenization
-            predicted_str = [self.detokenizer.detokenize(self.tgt_dict.string(pred, bpe_symbol="@@ ").split(), return_str=True) for pred in predicted]
-            target_str = [self.detokenizer.detokenize(self.tgt_dict.string(target, bpe_symbol="@@ ").split(), return_str=True) for target in targets]
-
-            # # no detokenization
-            # predicted_str = [self.tgt_dict.string(pred, bpe_symbol="@@ ") for pred in predicted]
-            # target_str = [self.tgt_dict.string(target, bpe_symbol="@@ ") for target in targets]
-        
         # calculate metric score
         with torch.no_grad():
             if self.metric == "bleu":
                 score = torch.tensor([[sacrebleu.sentence_bleu(pred, [targ]).score] * seq_len for pred, targ in zip(predicted_str, target_str)])
-                print("Score", score.mean())
-                # score = sacrebleu.sentence_bleu(predicted_str, [target_str]).score
             elif self.metric == "chrf":
                 score = torch.tensor([[sacrebleu.sentence_chrf(pred, [targ]).score] * seq_len for pred, targ in zip(predicted_str, target_str)])
           
@@ -85,7 +87,6 @@ class RLCriterion(FairseqCriterion):
         # calculate loss of all samples and average for batch loss
         loss = -sample_log_probs * score
         loss = loss.mean()
-        print("Loss", loss)
         return loss
     
     def forward(self, model, sample, reduce=True):
